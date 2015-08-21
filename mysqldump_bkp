@@ -1,0 +1,243 @@
+#!/bin/ksh
+
+
+# SCRIPT:       mysqldump_bkp
+# AUTHOR:       Shen Wei
+# DATE:         May 22 2014
+# REV:          1.0
+
+# PLATFORM:     Linux (Not platform dependent)
+#
+# REQUIREMENTS: MySQL database 4/5+ is installed
+#               mysqldump commnad is required
+#               It run under root/mysql user (MySQL database owner)
+#
+#
+# PURPOSE: The script is backup the MySQL database by mysqldump
+#
+#
+# REV LIST:
+#        DATE: May 22 2014
+#        BY:   Wei
+#        MODIFICATION: Creation
+#
+#
+# set -n   # Uncomment to check script syntax, without execution.
+#          # NOTE: Do not forget to put the # comment back in or
+#          #       the shell script will never execute!
+# set -x   # Uncomment to debug this shell script
+#
+
+PROGRAM_NAME=$(basename $0)
+PROGRAM_PATH=$(dirname $0)
+ROOT_PATH=$(dirname $PROGRAM_PATH)
+PROGRAM_VERSION=1.0
+HOST=$(hostname)
+BKPDIR=$ROOT_PATH
+
+LOGFILE=$PROGRAM_PATH/${PROGRAM_NAME}.${HOST}.log
+MAILFILE=$PROGRAM_PATH/${PROGRAM_NAME}.${HOST}.mail
+TMPFILE=$PROGRAM_PATH/${PROGRAM_NAME}.${HOST}.tmp
+MAIL_SENDER="Suz_Backup@xxx.com"
+PROGRAM_ADMIN_MAIL="shwpower@gmail.com"
+BKP_TYPE="mysqldump"
+
+##########################################################
+#              DEFINE FUNCTIONS HERE
+##########################################################
+############################
+function print_usage
+{
+        # Function to print script usage
+        echo "Usage:"
+        #echo "  $PROGRAM_NAME"
+        echo "  $PROGRAM_NAME -f <MySQL Config File>"
+        echo "  $PROGRAM_NAME -v"
+        echo "  $PROGRAM_NAME -h"
+}
+############################
+function print_version
+{
+        #### Function to print script's version
+        echo "$1 v$2"
+}
+############################
+function print_help
+{
+        # Function to print help messages
+        print_version $PROGRAM_NAME $PROGRAM_VERSION
+        echo ""
+        print_usage
+        echo ""
+        echo "MySQL mysqldump backup cronjob for all platform Unix/Linux System"
+        echo ""
+        echo " -f <MySQL Config File>"
+        echo "  MySQL_DB MySQL_HOME"
+        echo "  The default : mysqldb.conf"
+        echo ""
+}
+
+############################
+function print_msg
+{
+        #### Function to print messages with timestamp ####
+        msg=$*
+
+        if [ ! -z "${msg}" ]
+        then
+                curdate=$(date '+%D %T')
+                print -- "${curdate} : ${msg}" |tee -a ${LOGFILE}
+        else
+                print -- "${curdate} :" | tee -a ${LOGFILE}
+        fi
+}
+
+############################
+function pre_status
+{
+        # Judge the previous cronjob running is existed
+        ## The below is not support Solaris platform
+        # Add "grep -v "sh -c"" for cron on solaris system
+        STATUS=$(ps -eaf|grep $PROGRAM_NAME|grep -v grep |grep -v $$|grep -v "sh -c"|wc -l)
+        if [ $STATUS -ge 1 ]
+        then
+                print_msg "Program previous $PROGRAM_NAME is running -- " > $MAILFILE
+                echo -e "\n" >>$MAILFILE
+                ps -eaf|grep $PROGRAM_NAME|grep -v grep >> $MAILFILE
+                #cat $MAILFILE |mailx -r $MAIL_SENDER -s "Please stop the previous $PROGRAM_NAME before this time running" $PROGRAM_ADMIN_MAIL
+                send_mail $MAILFILE $MAIL_SENDER "Please stop the previous $PROGRAM_NAME before this time running" $PROGRAM_ADMIN_MAIL
+                print_msg "Exit..."
+
+                rm $MAILFILE
+                exit
+        fi
+}
+############################
+function send_mail
+{
+        # Send the mail , get mail related content by variables
+        # $1 - mail contents file
+        # $2 - mail sender
+        # $3 - mail subjects
+        # $4 - mail receiver
+
+        if [ $# -eq 4 ]
+        then
+                cat $1|mailx -r $2 -s "$3 at $(date '+%Y/%m/%d %H:%M:%S') on $HOST" "$4"
+                if [ $? -ne 0 ]
+                then
+                        print_msg "function send_mail executing error."
+                        exit 1
+                fi
+        else
+                print_msg "Wrong prameter with send_mail"
+                exit 1
+        fi
+}
+
+##########################################################
+#               BEGINNING OF MAIN
+##########################################################
+while getopts f:d:hv next; do
+        case $next in
+                f)
+                 CFGFILE=$OPTARG
+                 ;;
+                d)
+                 MYSQL_DB=$OPTARG
+                 ;;
+                h)
+                 print_help
+                 exit
+                 ;;
+                v)
+                 print_version $PROGRAM_NAME $PROGRAM_VERSION
+                 exit
+                 ;;
+                *)
+                 print_usage
+                 exit
+                 ;;
+        esac
+done
+
+CFGFILE=$PROGRAM_PATH/${CFGFILE:-mysqldb.conf}
+if [ "$MYSQL_DB" == "" ]; then
+        print_msg "No DB provided"
+        print_usage
+        exit
+fi
+
+if [ ! -f $CFGFILE ]; then
+        echo "Could not find the MySQL DB Configure File" > $MAILFILE
+        echo "$CFGFILE" >> $MAILFILE
+        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
+        exit
+fi
+
+STATUS=$(cat $CFGFILE |grep $MYSQL_DB |grep -v ^#|wc -l)
+if [ $STATUS  == "1" ]; then
+        MYSQL_DB=$(cat $CFGFILE|grep $MYSQL_DB|grep -v ^#|awk '{print $1}')
+        MYSQL_HOME=$(cat $CFGFILE|grep $MYSQL_DB|grep -v ^#|awk '{print $2}')
+        MYSQL_USER=$(cat $CFGFILE|grep $MYSQL_DB|grep -v ^#|awk '{print $3}')
+        MYSQL_PASSWD=$(cat $CFGFILE|grep $MYSQL_DB|grep -v ^#|awk '{print $4}')
+        MAIL_RCV=$(cat $CFGFILE|grep $MYSQL_DB|grep -v ^#|awk '{print $5}')
+
+        if [ ! -d $BKPDIR/$MYSQL_DB ]; then
+                print_msg "Could not find backup folder $BKPDIR/$MYSQL_DB" > $MAILFILE
+                send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
+                exit
+        fi
+        mkdir -p $BKPDIR/$MYSQL_DB/$BKP_TYPE-`date +%a`
+
+        print_msg "Start to Backup the $MYSQL_DB (under $MYSQL_HOME)"
+        if [ ! -x $MYSQL_HOME/bin/mysqldump -o ! -x $MYSQL_HOME/bin/mysql ] ;then
+                echo "Could not find the mysqldump or mysql" > $MAILFILE
+                echo "$MYSQL_HOME/bin/mysqldump" >> $MAILFILE
+                echo "$MYSQL_HOME/bin/mysql" >> $MAILFILE
+                send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
+        else
+                STIME=$(date '+%D %T')
+                print_msg "Get MySQL database list $MYSQL_HOME/bin/mysql -h localhost -Bse 'show databases'"
+                DATABASE_LIST=$($MYSQL_HOME/bin/mysql -u ${MYSQL_USER} -h localhost -p${MYSQL_PASSWD} -Bse 'show databases' 2>$TMPFILE)
+                if [ $? -ne 0 ]; then
+                        print_msg "Error while executing $MYSQL_HOME/bin/mysql to get the database list"
+                        echo "MySQL backup Error, Please check $LOGFILE" > $MAILFILE
+                        cat $TMPFILE >> $MAILFILE
+                        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $MAIL_RCV
+                        rm $TMPFILE $MAILFILE
+                        exit
+                fi
+                print_msg "${DATABASE_LIST}"
+                for DB in ${DATABASE_LIST}
+                do
+                        print_msg "Start to execute $MYSQL_HOME/bin/mysqldump --single-transaction -h localhost ${DB}"
+                        $MYSQL_HOME/bin/mysqldump --single-transaction -u ${MYSQL_USER} -h localhost -p${MYSQL_PASSWD} ${DB} > $BKPDIR/$MYSQL_DB/$BKP_TYPE-`date +%a`/${DB}.sql 2>$TMPFILE
+                        if [ $? -ne 0 ]; then
+                                print_msg "Error while executing $MYSQL_HOME/bin/mysqldump"
+                                echo "MySQL backup Error, Please check $LOGFILE" > $MAILFILE
+                                echo "$LOGFILE" >> $MAILFILE
+                                send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $MAIL_RCV
+                                rm $TMPFILE $MAILFILE
+                                exit
+                        else
+                                print_msg "End to execute $MYSQL_HOME/bin/mysqldump for $DB"
+                        fi
+                done
+                ETIME=$(date '+%D %T')
+                print_msg "Successfully backup $MYSQL_DB"
+                echo "The below is last dump backup file (Time from $STIME to $ETIME) ..."  >$MAILFILE
+                ls -lrth $BKPDIR/$MYSQL_DB/$BKP_TYPE-`date +%a` >> $MAILFILE
+                echo "" >>$MAILFILE
+                echo "All backup contents" >>$MAILFILE
+                du -sh  $BKPDIR/$MYSQL_DB/* >>$MAILFILE
+                send_mail $MAILFILE $MAIL_SENDER "$MYSQL_DB MYSQLDB backup($BKP_TYPE) finished" $MAIL_RCV
+        fi
+else
+        print_msg "Wrong MySQL DB Configure file"
+        echo "No configuration for $MYSQL_DB" >$MAILFILE
+        cat $CFGFILE |grep $MYSQL_DB |grep -v ^# >>$MAILFILE
+        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
+fi
+
+rm $MAILFILE $TMPFILE

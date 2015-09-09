@@ -4,7 +4,7 @@
 # SCRIPT:       pgdump_bkp
 # AUTHOR:       Shen Wei
 # DATE:         Apr 30 2014
-# REV:          1.0
+# REV:          1.3
 
 # PLATFORM:     Linux (Not platform dependent)
 #
@@ -21,6 +21,19 @@
 #        BY:   Wei
 #        MODIFICATION: Creation
 #
+#       DATE: May 6th 2014
+#       BY: Wei
+#       MODIFICATION: Add send_mail function
+#
+#       DATE: May 7th 2014
+#       BY: Wei
+#       MODIFICATION: Change the function pre_running_status to pre_status
+#
+#       DATE: May 13th 2014
+#       BY: Wei
+#       MODIFICATION:   Add backup start&end time
+#                       Add backup type on mail subject
+#
 #
 # set -n   # Uncomment to check script syntax, without execution.
 #          # NOTE: Do not forget to put the # comment back in or
@@ -31,13 +44,15 @@
 PROGRAM_NAME=$(basename $0)
 PROGRAM_PATH=$(dirname $0)
 ROOT_PATH=$(dirname $PROGRAM_PATH)
-PROGRAM_VERSION=1.0
+PROGRAM_VERSION=1.3
 HOST=$(hostname)
 BKPDIR=$ROOT_PATH
 
 LOGFILE=$PROGRAM_PATH/${PROGRAM_NAME}.${HOST}.log
+MAILFILE=$PROGRAM_PATH/${PROGRAM_NAME}.${HOST}.mail
 MAIL_SENDER="Suz_Backup@xxx.com"
 PROGRAM_ADMIN_MAIL="shwpower@gmail.com"
+BKP_TYPE="pg_dump"
 
 ##########################################################
 #              DEFINE FUNCTIONS HERE
@@ -90,23 +105,47 @@ function print_msg
 }
 
 ############################
-function pre_running_status
+function pre_status
 {
         # Judge the previous cronjob running is existed
-        STATUS=$(ps -eaf|grep $PROGRAM_NAME|grep -v grep |grep -v $$|wc -l)
+        ## The below is not support Solaris platform
+        # Add "grep -v "sh -c"" for cron on solaris system
+        STATUS=$(ps -eaf|grep $PROGRAM_NAME|grep -v grep |grep -v $$|grep -v "sh -c"|wc -l)
         if [ $STATUS -ge 1 ]
         then
                 print_msg "Program previous $PROGRAM_NAME is running -- " > $MAILFILE
                 echo -e "\n" >>$MAILFILE
                 ps -eaf|grep $PROGRAM_NAME|grep -v grep >> $MAILFILE
-                cat $MAILFILE |mailx -r $MAIL_SENDER -s "Please stop the previous $PROGRAM_NAME before this time running" $PROGRAM_ADMIN_MAIL
+                #cat $MAILFILE |mailx -r $MAIL_SENDER -s "Please stop the previous $PROGRAM_NAME before this time running" $PROGRAM_ADMIN_MAIL
+                send_mail $MAILFILE $MAIL_SENDER "Please stop the previous $PROGRAM_NAME before this time running" $PROGRAM_ADMIN_MAIL
                 print_msg "Exit..."
 
                 rm $MAILFILE
                 exit
         fi
 }
+############################
+function send_mail
+{
+        # Send the mail , get mail related content by variables
+        # $1 - mail contents file
+        # $2 - mail sender
+        # $3 - mail subjects
+        # $4 - mail receiver
 
+        if [ $# -eq 4 ]
+        then
+                cat $1|mailx -r $2 -s "$3 at $(date '+%Y/%m/%d %H:%M:%S') on $HOST" "$4"
+                if [ $? -ne 0 ]
+                then
+                        print_msg "function send_mail executing error."
+                        exit 1
+                fi
+        else
+                print_msg "Wrong prameter with send_mail"
+                exit 1
+        fi
+}
 
 ##########################################################
 #               BEGINNING OF MAIN
@@ -142,7 +181,10 @@ if [ "$PG_DB" == "" ]; then
 fi
 
 if [ ! -f $CFGFILE ]; then
-        echo "Could not find the PostgreSQL DB Configure File"|mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $PROGRAM_ADMIN_MAIL
+        #echo "Could not find the PostgreSQL DB Configure File"|mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $PROGRAM_ADMIN_MAIL
+        echo "Could not find the PostgreSQL DB Configure File" > $MAILFILE
+        echo "$CFGFILE" >> $MAILFILE
+        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
         exit
 fi
 
@@ -154,22 +196,39 @@ if [ $STATUS  == "1" ]; then
 
         print_msg "Start to Backup the $DB (under $PG_HOME)"
         if [ ! -x $PG_HOME/bin/pg_dump ] ;then
-                echo "Could not find the pg_dump"|mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $PROGRAM_ADMIN_MAIL
+                #echo "Could not find the pg_dump"|mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $PROGRAM_ADMIN_MAIL
+                echo "Could not find the pg_dump" > $MAILFILE
+                echo "$PG_HOME/bin/pg_dump" >> $MAILFILE
+                send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
         else
+                STIME=$(date '+%D %T')
                 print_msg "Executing $PG_HOME/bin/pg_dump -Fc -f $BKPDIR/$PG_DB/$PG_DB-`date +%a`.pgdump $PG_DB"
                 $PG_HOME/bin/pg_dump -Fc -f $BKPDIR/$PG_DB/$PG_DB-`date +%a`.pgdump $PG_DB 2>>$LOGFILE
+                ETIME=$(date '+%D %T')
                 if [ $? -ne 0 ]; then
                         print_msg "Error while executing $PG_HOME/bin/pg_dump"
-                        echo "PostgreSQL backup Error, Please check $LOGFILE" |mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $MAIL_RCV
+                        #echo "PostgreSQL backup Error, Please check $LOGFILE" |mailx -r $MAIL_SENDER -s "Error while running $PROGRAM_NAME at $(date) on $HOST" $MAIL_RCV
+                        echo "PostgreSQL backup Error, Please check $LOGFILE" > $MAILFILE
+                        echo "$LOGFILE" >> $MAILFILE
+                        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $MAIL_RCV
                 else
                         print_msg "End to execute $PG_HOME/bin/pg_dump"
                         print_msg "$(ls -l $BKPDIR/$PG_DB/$PG_DB-$(date +%a).pgdump) "
                         print_msg "Successfully backup $PG_DB"
-                        ls -l $BKPDIR/$PG_DB/$PG_DB-`date +%a`.pgdump |mailx -r $MAIL_SENDER -s "$PG_DB PGDB backup finished successfully at $(date) on $HOST" $MAIL_RCV
-
+                        #ls -l $BKPDIR/$PG_DB/$PG_DB-`date +%a`.pgdump |mailx -r $MAIL_SENDER -s "$PG_DB PGDB backup finished successfully at $(date) on $HOST" $MAIL_RCV
+                        echo "The below is last dump backup file (Time from $STIME to $ETIME) ..."  >$MAILFILE
+                        ls -l $BKPDIR/$PG_DB/$PG_DB-`date +%a`.pgdump >> $MAILFILE
+                        echo "" >>$MAILFILE
+                        echo "All backup contents" >>$MAILFILE
+                        ls -l $BKPDIR/$PG_DB/ >>$MAILFILE
+                        send_mail $MAILFILE $MAIL_SENDER "$PG_DB PGDB backup($BKP_TYPE) finished" $MAIL_RCV
                 fi
         fi
 else
         print_msg "Wrong PostgreSQL DB Configure file"
+        echo "No configuration for $PG_DB" >$MAILFILE
+        cat $CFGFILE |grep $PG_DB |grep -v ^# >>$MAILFILE
+        send_mail $MAILFILE $MAIL_SENDER "Error while running $PROGRAM_NAME" $PROGRAM_ADMIN_MAIL
 fi
 
+rm $MAILFILE
